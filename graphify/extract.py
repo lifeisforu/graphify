@@ -10275,6 +10275,76 @@ def _extract_sequential(
 _PARALLEL_THRESHOLD = 20
 
 
+def cache_files(
+    paths: list[Path],
+    cache_root: Path | None = None,
+    *,
+    max_workers: int | None = None,
+) -> int:
+    """Cache AST extraction results without running cross-file analysis.
+
+    Useful for pre-warming the cache in a separate step (e.g. CI) so that a
+    subsequent extract() call only needs to do cross-file resolution.
+
+    JS-family files (.js/.ts/etc.) that bypass the cache are skipped.
+    Already-cached files are skipped. Returns the number of files newly cached.
+    """
+    if not paths:
+        return 0
+
+    root = Path(os.path.commonpath([p.resolve() for p in paths]))
+    if root.is_file():
+        root = root.parent
+    effective_root = cache_root or root
+
+    total = len(paths)
+    per_file: list[dict | None] = [None] * total
+    uncached_work: list[tuple[int, Path]] = []
+
+    for i, path in enumerate(paths):
+        if _get_extractor(path) is None:
+            continue
+        if path.suffix in _JS_CACHE_BYPASS_SUFFIXES:
+            continue
+        if load_cached(path, effective_root) is not None:
+            continue
+        uncached_work.append((i, path))
+
+    if not uncached_work:
+        return 0
+
+    if len(uncached_work) >= _PARALLEL_THRESHOLD:
+        ran_parallel = _extract_parallel(
+            uncached_work, per_file, effective_root, max_workers, total
+        )
+        if not ran_parallel:
+            _extract_sequential(uncached_work, per_file, effective_root, total)
+    else:
+        _extract_sequential(uncached_work, per_file, effective_root, total)
+
+    return len(uncached_work)
+
+
+def cache_files_from(
+    list_file: Path,
+    cache_root: Path | None = None,
+    *,
+    max_workers: int | None = None,
+) -> int:
+    """Read file paths from a text file and call cache_files().
+
+    list_file: text file with one path per line; blank lines and lines
+    starting with '#' are ignored.
+    Returns the number of files newly cached.
+    """
+    paths = [
+        Path(line.strip())
+        for line in list_file.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    return cache_files(paths, cache_root, max_workers=max_workers)
+
+
 def extract(
     paths: list[Path],
     cache_root: Path | None = None,

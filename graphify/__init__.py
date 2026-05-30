@@ -6,6 +6,8 @@ def __getattr__(name):
     _map = {
         "extract": ("graphify.extract", "extract"),
         "collect_files": ("graphify.extract", "collect_files"),
+        "cache_files": ("graphify.extract", "cache_files"),
+        "cache_files_from": ("graphify.extract", "cache_files_from"),
         "build_from_json": ("graphify.build", "build_from_json"),
         "cluster": ("graphify.cluster", "cluster"),
         "score_all": ("graphify.cluster", "score_all"),
