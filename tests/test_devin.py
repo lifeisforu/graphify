@@ -48,7 +48,7 @@ def test_devin_install_user_creates_skill_file(tmp_path):
 def test_devin_skill_file_contains_frontmatter(tmp_path):
     """Installed skill file must include Devin-specific YAML frontmatter."""
     _devin_install_user(tmp_path)
-    content = _skill_path_user(tmp_path).read_text()
+    content = _skill_path_user(tmp_path).read_text(encoding="utf-8")
     assert "name: graphify" in content
     assert "argument-hint:" in content
     assert "triggers:" in content
@@ -57,7 +57,7 @@ def test_devin_skill_file_contains_frontmatter(tmp_path):
 def test_devin_skill_file_references_graphify_query(tmp_path):
     """/graphify skill must mention graphify query (query-first policy)."""
     _devin_install_user(tmp_path)
-    content = _skill_path_user(tmp_path).read_text()
+    content = _skill_path_user(tmp_path).read_text(encoding="utf-8")
     assert "graphify query" in content or "/graphify query" in content
 
 
@@ -244,7 +244,7 @@ def test_devin_skill_file_uses_python_c_syntax():
     ``python -c "..."`` so they work in pipx / venv environments.
     """
     import graphify
-    skill = (Path(graphify.__file__).parent / "skill-devin.md").read_text()
+    skill = (Path(graphify.__file__).parent / "skill-devin.md").read_text(encoding="utf-8")
     assert '.graphify_python) -c "' in skill, (
         "skill-devin.md must use the interpreter-detection pattern "
         "'$(cat graphify-out/.graphify_python) -c \"...\"'"
@@ -255,7 +255,7 @@ def test_devin_skill_file_uses_python_c_syntax():
 def test_devin_skill_file_frontmatter_has_triggers():
     """Devin skill frontmatter must list triggers for model-invocable activation."""
     import graphify
-    skill = (Path(graphify.__file__).parent / "skill-devin.md").read_text()
+    skill = (Path(graphify.__file__).parent / "skill-devin.md").read_text(encoding="utf-8")
     assert "triggers:" in skill
     assert "model" in skill
 

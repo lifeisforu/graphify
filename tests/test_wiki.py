@@ -52,7 +52,7 @@ def test_to_wiki_god_node_article_created(tmp_path):
 def test_index_links_all_communities(tmp_path):
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS)
-    index = (tmp_path / "index.md").read_text()
+    index = (tmp_path / "index.md").read_text(encoding="utf-8")
     assert "[[Parsing Layer]]" in index
     assert "[[Rendering Layer]]" in index
 
@@ -60,7 +60,7 @@ def test_index_links_all_communities(tmp_path):
 def test_index_lists_god_nodes(tmp_path):
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS, god_nodes_data=GOD_NODES)
-    index = (tmp_path / "index.md").read_text()
+    index = (tmp_path / "index.md").read_text(encoding="utf-8")
     assert "[[parse]]" in index
     assert "2 connections" in index
 
@@ -68,7 +68,7 @@ def test_index_lists_god_nodes(tmp_path):
 def test_community_article_has_cross_links(tmp_path):
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS)
-    parsing = (tmp_path / "Parsing_Layer.md").read_text()
+    parsing = (tmp_path / "Parsing_Layer.md").read_text(encoding="utf-8")
     # n1 (parsing) references n3 (rendering) → cross-community link
     assert "[[Rendering Layer]]" in parsing
 
@@ -76,14 +76,14 @@ def test_community_article_has_cross_links(tmp_path):
 def test_community_article_shows_cohesion(tmp_path):
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS, cohesion=COHESION)
-    parsing = (tmp_path / "Parsing_Layer.md").read_text()
+    parsing = (tmp_path / "Parsing_Layer.md").read_text(encoding="utf-8")
     assert "cohesion 0.85" in parsing
 
 
 def test_community_article_has_audit_trail(tmp_path):
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS)
-    parsing = (tmp_path / "Parsing_Layer.md").read_text()
+    parsing = (tmp_path / "Parsing_Layer.md").read_text(encoding="utf-8")
     assert "EXTRACTED" in parsing
     assert "INFERRED" in parsing
 
@@ -91,14 +91,14 @@ def test_community_article_has_audit_trail(tmp_path):
 def test_god_node_article_has_connections(tmp_path):
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS, god_nodes_data=GOD_NODES)
-    article = (tmp_path / "parse.md").read_text()
+    article = (tmp_path / "parse.md").read_text(encoding="utf-8")
     assert "[[validate]]" in article or "[[render]]" in article
 
 
 def test_god_node_article_links_community(tmp_path):
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS, god_nodes_data=GOD_NODES)
-    article = (tmp_path / "parse.md").read_text()
+    article = (tmp_path / "parse.md").read_text(encoding="utf-8")
     assert "[[Parsing Layer]]" in article
 
 
@@ -121,7 +121,7 @@ def test_to_wiki_no_labels_uses_fallback(tmp_path):
 def test_article_navigation_footer(tmp_path):
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS)
-    article = (tmp_path / "Parsing_Layer.md").read_text()
+    article = (tmp_path / "Parsing_Layer.md").read_text(encoding="utf-8")
     assert "[[index]]" in article
 
 
@@ -135,7 +135,7 @@ def test_community_article_truncation_notice(tmp_path):
         G.add_edge(nodes[i], nodes[i + 1], relation="calls", confidence="EXTRACTED", weight=1.0)
     communities = {0: nodes}
     to_wiki(G, communities, tmp_path, community_labels={0: "Big Community"})
-    article = (tmp_path / "Big_Community.md").read_text()
+    article = (tmp_path / "Big_Community.md").read_text(encoding="utf-8")
     assert "and 5 more nodes" in article
 
 
@@ -149,7 +149,7 @@ def test_cross_community_links_without_node_community_attrs(tmp_path):
     communities = {0: ["n1"], 1: ["n2"]}
     labels = {0: "Parsing", 1: "Rendering"}
     to_wiki(G, communities, tmp_path, community_labels=labels)
-    article = (tmp_path / "Parsing.md").read_text()
+    article = (tmp_path / "Parsing.md").read_text(encoding="utf-8")
     assert "[[Rendering]]" in article
 
 
@@ -163,7 +163,7 @@ def test_god_node_article_community_without_node_attr(tmp_path):
     labels = {0: "Core Logic"}
     god_nodes = [{"id": "n1", "label": "parse", "degree": 1}]
     to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
-    article = (tmp_path / "parse.md").read_text()
+    article = (tmp_path / "parse.md").read_text(encoding="utf-8")
     assert "[[Core Logic]]" in article
 
 
@@ -176,7 +176,7 @@ def test_to_wiki_drops_stale_community_nodes(tmp_path):
     communities = {0: ["n1", "n2", "stale_ghost"], 1: ["n3", "n4"]}
     n = to_wiki(G, communities, tmp_path, community_labels=LABELS)
     assert n == 2  # both community articles still written
-    article = (tmp_path / "Parsing_Layer.md").read_text()
+    article = (tmp_path / "Parsing_Layer.md").read_text(encoding="utf-8")
     assert "parse" in article
     assert "stale_ghost" not in article
 

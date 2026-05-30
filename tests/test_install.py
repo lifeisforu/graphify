@@ -199,14 +199,14 @@ def test_install_unknown_platform_exits(tmp_path):
 def test_codex_skill_contains_spawn_agent():
     """Codex skill file must reference spawn_agent."""
     import graphify
-    skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text()
+    skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text(encoding="utf-8")
     assert "spawn_agent" in skill
 
 
 def test_codex_skill_uses_graphify_with_dirty_graph_output():
     """Codex skill must keep graph-first orientation even when graph output is dirty."""
     import graphify
-    skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text()
+    skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text(encoding="utf-8")
     assert "Dirty `graphify-out/` artifacts are expected" in skill
     assert "not a reason to skip Graphify" in skill
     assert "graphify query" in skill
@@ -224,14 +224,14 @@ def test_codex_agents_install_mentions_dirty_graph_output(tmp_path):
 def test_opencode_skill_contains_mention():
     """OpenCode skill file must reference @mention."""
     import graphify
-    skill = (Path(graphify.__file__).parent / "skill-opencode.md").read_text()
+    skill = (Path(graphify.__file__).parent / "skill-opencode.md").read_text(encoding="utf-8")
     assert "@mention" in skill
 
 
 def test_opencode_skill_uses_opencode_agent_guidance():
     """OpenCode skill must not reference Codex/Claude agent type names."""
     import graphify
-    skill = (Path(graphify.__file__).parent / "skill-opencode.md").read_text()
+    skill = (Path(graphify.__file__).parent / "skill-opencode.md").read_text(encoding="utf-8")
     assert "general-purpose" not in skill
     assert 'subagent_type="general-purpose"' not in skill
     assert "@agent" in skill
@@ -245,7 +245,7 @@ def test_opencode_skill_uses_opencode_agent_guidance():
 def test_claw_skill_is_sequential():
     """OpenClaw skill file must describe sequential extraction."""
     import graphify
-    skill = (Path(graphify.__file__).parent / "skill-claw.md").read_text()
+    skill = (Path(graphify.__file__).parent / "skill-claw.md").read_text(encoding="utf-8")
     assert "sequential" in skill.lower()
     assert "spawn_agent" not in skill
     assert "@mention" not in skill

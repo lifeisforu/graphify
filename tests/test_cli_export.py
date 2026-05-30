@@ -17,12 +17,16 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _run(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    run_env = {**os.environ, "PYTHONUTF8": "1"}
+    if env:
+        run_env.update(env)
     return subprocess.run(
         [PYTHON, "-m", "graphify"] + args,
         cwd=cwd,
         capture_output=True,
         text=True,
-        env=env,
+        encoding="utf-8",
+        env=run_env,
     )
 
 
@@ -137,7 +141,7 @@ def test_export_graphml_creates_file(tmp_path):
     gml = tmp_path / "graphify-out" / "graph.graphml"
     assert gml.exists()
     assert gml.stat().st_size > 0
-    content = gml.read_text()
+    content = gml.read_text(encoding="utf-8")
     assert "<graphml" in content
 
 

@@ -67,7 +67,7 @@ def test_to_graphml_valid_xml():
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.graphml"
         to_graphml(G, communities, str(out))
-        content = out.read_text()
+        content = out.read_text(encoding="utf-8")
         assert "<graphml" in content
         assert "<node" in content
 
@@ -77,7 +77,7 @@ def test_to_graphml_has_community_attribute():
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.graphml"
         to_graphml(G, communities, str(out))
-        content = out.read_text()
+        content = out.read_text(encoding="utf-8")
         assert "community" in content
 
 def test_to_html_creates_file():
@@ -94,7 +94,7 @@ def test_to_html_contains_visjs():
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.html"
         to_html(G, communities, str(out))
-        content = out.read_text()
+        content = out.read_text(encoding="utf-8")
         assert "vis-network" in content
 
 
@@ -112,7 +112,7 @@ def test_to_html_pins_visjs_version_with_sri():
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.html"
         to_html(G, communities, str(out))
-        content = out.read_text()
+        content = out.read_text(encoding="utf-8")
 
     # Versioned URL — unversioned `vis-network/standalone/...` is rejected.
     assert "vis-network@9.1.6/standalone/umd/vis-network.min.js" in content
@@ -130,7 +130,7 @@ def test_to_html_contains_search():
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.html"
         to_html(G, communities, str(out))
-        content = out.read_text()
+        content = out.read_text(encoding="utf-8")
         assert "search" in content.lower()
 
 def test_to_html_contains_legend_with_labels():
@@ -140,7 +140,7 @@ def test_to_html_contains_legend_with_labels():
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.html"
         to_html(G, communities, str(out), community_labels=labels)
-        content = out.read_text()
+        content = out.read_text(encoding="utf-8")
         assert "Group 0" in content
 
 def test_to_html_contains_nodes_and_edges():
@@ -149,7 +149,7 @@ def test_to_html_contains_nodes_and_edges():
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.html"
         to_html(G, communities, str(out))
-        content = out.read_text()
+        content = out.read_text(encoding="utf-8")
         assert "RAW_NODES" in content
         assert "RAW_EDGES" in content
 

@@ -95,15 +95,16 @@ def _normalize_path(path: Path) -> Path:
 
 
 def file_hash(path: Path, root: Path = Path(".")) -> str:
-    """SHA256 of file contents + path relative to root.
+    """SHA256 of file contents only (path-independent).
 
     Uses a stat-based fastpath (size + mtime_ns) to skip full reads when the
     file hasn't changed. Falls through to full SHA256 on first encounter or
     when stat changes. Index is flushed atomically at process exit.
 
-    Using a relative path (not absolute) makes cache entries portable across
-    machines and checkout directories, so shared caches and CI work correctly.
-    Falls back to the resolved absolute path if the file is outside root.
+    Hash is content-only so the same file produces the same cache key regardless
+    of which root directory is used. This allows subfolder builds and full-project
+    builds to share cache entries (e.g. `graphify extract src/` then
+    `graphify extract .` reuses the cache from the first run).
 
     For Markdown files (.md), only the body below the YAML frontmatter is hashed,
     so metadata-only changes (e.g. reviewed, status, tags) do not invalidate the cache.
@@ -132,11 +133,6 @@ def file_hash(path: Path, root: Path = Path(".")) -> str:
     h = hashlib.sha256()
     h.update(content)
     h.update(b"\x00")
-    try:
-        rel = p.resolve().relative_to(Path(root).resolve())
-        h.update(rel.as_posix().lower().encode())
-    except ValueError:
-        h.update(p.resolve().as_posix().lower().encode())
     digest = h.hexdigest()
 
     if st is not None:
