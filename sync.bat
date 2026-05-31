@@ -1,2 +1,2 @@
 @echo off
-uv sync --native-tls
+uv sync --native-tls --group dev

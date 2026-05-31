@@ -3,6 +3,7 @@ venv/
 env/
 __pycache__/
 *.pyc
+pypi_token.txt
 *.egg-info/
 .eggs/
 dist/
