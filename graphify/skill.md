@@ -685,20 +685,24 @@ When `graphify-out/` is built on one machine and used on another (e.g. shared vi
 
 **How to detect this:** Run `graphify query` or `graphify explain` and inspect the `src=` or `Source:` fields. If the paths do not exist on this machine (wrong drive letter, different root prefix, or purely relative paths without a recognisable base), root mapping is needed.
 
-**How to fix it:** Check `graphify-out/.graphify_roots.json` to see the build-time root list, then run `graphify set-roots` with the corresponding paths on this machine:
+**Also check `local_roots` validity:** Even if `local_roots` was previously set, the mapped paths may no longer exist (e.g. the source folder was renamed, moved, or deleted). Always verify that the paths in `local_roots` actually exist before trusting query results:
 
 ```bash
-# Show build-time roots
 cat graphify-out/.graphify_roots.json
-# Output: {"roots": ["C:/my/Engine", "D:/asdf/Project"], "local_roots": [...]}
+# Check both "roots" (build-time) and "local_roots" (current machine mapping)
+# If ANY path in local_roots does not exist on disk → re-run set-roots
+```
 
-# Set local paths (one per root, in the same order)
+**How to fix it:** Run `graphify set-roots` with the correct current paths on this machine:
+
+```bash
+# Set local paths (one per root, in the same order as "roots")
 graphify set-roots "D:/p4/Engine" "D:/p4/Project"
 ```
 
 `graphify query` and `graphify explain` automatically apply the mapping after `set-roots` is run — no restart needed.
 
-If the user asks about file paths that look wrong, or says "the paths don't match my machine", proactively run this check and fix sequence without waiting to be asked.
+If the user asks about file paths that look wrong, or says "the paths don't match my machine", or if any `local_roots` path does not exist on disk — proactively run this check and fix sequence without waiting to be asked.
 
 ### Step 8 - Token reduction benchmark (only if total_words > 5000)
 

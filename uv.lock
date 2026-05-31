@@ -1639,7 +1639,7 @@ wheels = [
 
 [[package]]
 name = "lifeisforu-graphify"
-version = "0.8.29"
+version = "0.8.31"
 source = { editable = "." }
 dependencies = [
     { name = "datasketch" },

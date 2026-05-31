@@ -1,5 +1,5 @@
 ---
-name: graphify-windows
+name: graphify
 description: "any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report. Use when user asks any question about a codebase, project content, architecture, or file relationships — especially if graphify-out/ exists. Provides persistent graph with god nodes, community detection, and BFS/DFS query tools."
 trigger: /graphify
 ---
@@ -752,6 +752,30 @@ To configure in Claude Desktop, add to `claude_desktop_config.json`:
   }
 }
 ```
+
+#### Cross-machine path setup (shared graphify-out/)
+
+When `graphify-out/` is built on one machine and used on another (e.g. shared via Perforce, git, or a network drive), `source_file` values in query results may point to paths that do not exist on the current machine.
+
+**How to detect this:** Run `graphify query` or `graphify explain` and inspect the `src=` or `Source:` fields. If the paths do not exist on this machine (wrong drive letter, different root prefix), root mapping is needed.
+
+**Also check `local_roots` validity:** Even if `local_roots` was previously set, the mapped paths may no longer exist (e.g. the source folder was renamed, moved, or deleted). Always verify that the paths in `local_roots` actually exist before trusting query results:
+
+```powershell
+Get-Content graphify-out\.graphify_roots.json
+# Check both "roots" (build-time) and "local_roots" (current machine mapping)
+# If ANY path in local_roots does not exist on disk → re-run set-roots
+```
+
+**How to fix it:** Run `graphify set-roots` with the correct current paths on this machine:
+
+```powershell
+graphify set-roots "D:/p4/Engine" "D:/p4/Project"
+```
+
+`graphify query` and `graphify explain` automatically apply the mapping after `set-roots` is run — no restart needed.
+
+If the user asks about file paths that look wrong, or says "the paths don't match my machine", or if any `local_roots` path does not exist on disk — proactively run this check and fix sequence without waiting to be asked.
 
 ### Step 8 - Token reduction benchmark (only if total_words > 5000)
 
