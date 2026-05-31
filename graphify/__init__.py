@@ -8,6 +8,8 @@ def __getattr__(name):
         "collect_files": ("graphify.extract", "collect_files"),
         "cache_files": ("graphify.extract", "cache_files"),
         "cache_files_from": ("graphify.extract", "cache_files_from"),
+        "cache_dirs": ("graphify.extract", "cache_dirs"),
+        "cache_dirs_from": ("graphify.extract", "cache_dirs_from"),
         "build_from_json": ("graphify.build", "build_from_json"),
         "cluster": ("graphify.cluster", "cluster"),
         "score_all": ("graphify.cluster", "score_all"),

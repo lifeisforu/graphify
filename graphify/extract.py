@@ -10345,6 +10345,50 @@ def cache_files_from(
     return cache_files(paths, cache_root, max_workers=max_workers)
 
 
+def cache_dirs(
+    dirs: list[Path],
+    cache_root: Path | None = None,
+    *,
+    follow_symlinks: bool = False,
+    max_workers: int | None = None,
+) -> int:
+    """Collect files from a list of directories and call cache_files().
+
+    Each entry in dirs is walked recursively via collect_files(); the
+    combined de-duplicated file list is then pre-warmed into the AST cache.
+    Returns the number of files newly cached.
+    """
+    seen: set[Path] = set()
+    paths: list[Path] = []
+    for d in dirs:
+        for p in collect_files(d, follow_symlinks=follow_symlinks):
+            if p not in seen:
+                seen.add(p)
+                paths.append(p)
+    return cache_files(paths, cache_root, max_workers=max_workers)
+
+
+def cache_dirs_from(
+    list_file: Path,
+    cache_root: Path | None = None,
+    *,
+    follow_symlinks: bool = False,
+    max_workers: int | None = None,
+) -> int:
+    """Read directory paths from a text file and call cache_dirs().
+
+    list_file: text file with one directory path per line; blank lines and
+    lines starting with '#' are ignored.
+    Returns the number of files newly cached.
+    """
+    dirs = [
+        Path(line.strip())
+        for line in list_file.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    return cache_dirs(dirs, cache_root, follow_symlinks=follow_symlinks, max_workers=max_workers)
+
+
 def extract(
     paths: list[Path],
     cache_root: Path | None = None,
