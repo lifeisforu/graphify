@@ -1106,7 +1106,14 @@ if roots_file.exists():
 Remove-Item -ErrorAction SilentlyContinue graphify-out\.graphify_step_for_graphify_query_24.py
 ```
 If it exits with code 1, stop and tell the user to run `/graphify <path>` first.
-If it exits with code 2, stop and ask the user to run `graphify set-roots` with the correct current paths before querying.
+If it exits with code 2, **do not just tell the user to run set-roots manually**. Instead:
+1. Show the build-time roots from the WARNING output (e.g. `["C:/my/Engine", "D:/asdf/Project"]`).
+2. For each root, ask the user: "빌드 머신의 `C:/my/Engine` 은 현재 머신에서 어느 경로인가요?" (use the actual path from the output).
+3. Once the user provides the mapped paths, run `graphify set-roots` yourself:
+```powershell
+graphify set-roots "USER_PROVIDED_PATH_0" "USER_PROVIDED_PATH_1"
+```
+4. Then re-run the pre-flight check to confirm roots are now valid, and proceed with the query.
 
 Load `graphify-out/graph.json`, then:
 
