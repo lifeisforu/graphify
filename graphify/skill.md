@@ -51,6 +51,29 @@ If the user invoked `/graphify --help` or `/graphify -h` (with no other argument
 
 **Fast path — existing graph:** Before doing anything else, check whether `graphify-out/graph.json` exists. The expected location is `graphify-out/graph.json` relative to the **current working directory** (i.e. the project root where you are running commands). If it exists AND the user's request is a natural-language question about the codebase (e.g. "How does X work?", "What calls Y?", "Trace the data flow through Z") and NOT an explicit rebuild command (`--update`, `--cluster-only`, or a bare path/URL that implies fresh extraction): **skip Steps 1–5 entirely and jump straight to `## For /graphify query`.** Run `graphify query "<question>"` immediately. Do not run detect. Do not check corpus size. Do not ask the user to narrow. The graph is already built — use it.
 
+**Root validity check (REQUIRED before any query on an existing graph):** When taking the fast path, first check whether `local_roots` are still valid before running any query:
+
+```bash
+python -c "
+import json
+from pathlib import Path
+roots_file = Path('graphify-out/.graphify_roots.json')
+if not roots_file.exists(): exit(0)
+data = json.loads(roots_file.read_text(encoding='utf-8'))
+local_roots = data.get('local_roots') or data.get('roots', [])
+bad = [r for r in local_roots if not Path(r).exists()]
+if bad:
+    print('BAD_ROOTS:' + '|'.join(bad))
+    print('BUILD_ROOTS:' + '|'.join(data.get('roots', [])))
+    exit(2)
+"
+```
+
+If exit code 2: **do not run the query**. Read the `BAD_ROOTS` and `BUILD_ROOTS` from the output. For each path in `BUILD_ROOTS`, ask the user directly:
+> "빌드 머신의 `<root>` 는 현재 머신에서 어느 경로인가요?"
+
+Once the user provides all mapped paths, run `graphify set-roots "PATH_0" "PATH_1" ...`, then proceed with the query.
+
 If no path was given, use `.` (current directory). Do not ask the user for a path.
 
 If the path argument starts with `https://github.com/` or `http://github.com/`, treat it as a GitHub URL - run Step 0 before anything else, then continue with the resolved local path.

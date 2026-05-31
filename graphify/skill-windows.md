@@ -58,6 +58,29 @@ If the user invoked `/graphify --help` or `/graphify -h` (with no other argument
 
 If no path was given, use `.` (current directory). Do not ask the user for a path.
 
+**If the user is querying an existing graph** (`/graphify query`, `/graphify explain`, `/graphify path`, or any natural-language question about the codebase when `graphify-out/graph.json` already exists) — **before running any query**, check whether `local_roots` are still valid:
+
+```powershell
+$roots = Get-Content graphify-out\.graphify_roots.json -ErrorAction SilentlyContinue | ConvertFrom-Json
+if ($roots) {
+    $localRoots = if ($roots.local_roots) { $roots.local_roots } else { $roots.roots }
+    $bad = $localRoots | Where-Object { -not (Test-Path $_) }
+    if ($bad) {
+        Write-Host "WARNING: These source roots no longer exist: $bad"
+        Write-Host "Build-time roots: $($roots.roots)"
+    }
+}
+```
+
+If `$bad` is non-empty: **do not proceed with the query**. Instead, for each path in `$roots.roots`, ask the user directly:
+> "빌드 머신의 `<root>` 는 현재 머신에서 어느 경로인가요?"
+
+Once the user provides all mapped paths, run:
+```powershell
+graphify set-roots "PATH_0" "PATH_1" ...
+```
+Then proceed with the query.
+
 Follow these steps in order. Do not skip steps.
 
 ### Step 1 - Ensure graphify is installed
