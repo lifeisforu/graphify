@@ -990,6 +990,35 @@ Two traversal modes - choose based on the question:
 | BFS (default) | _(none)_ | "What is X connected to?" - broad context, nearest neighbors first |
 | DFS | `--dfs` | "How does X reach Y?" - trace a specific chain or dependency path |
 
+### Pre-flight — graph exists and roots are valid (REQUIRED before anything else)
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from pathlib import Path
+
+if not Path('graphify-out/graph.json').exists():
+    print('ERROR: No graph found. Run /graphify <path> first to build the graph.')
+    raise SystemExit(1)
+
+roots_file = Path('graphify-out/.graphify_roots.json')
+if roots_file.exists():
+    data = json.loads(roots_file.read_text(encoding='utf-8'))
+    local_roots = data.get('local_roots') or data.get('roots', [])
+    bad = [r for r in local_roots if not Path(r).exists()]
+    if bad:
+        print('WARNING: The following source root(s) no longer exist on this machine:')
+        for b in bad:
+            print(f'  {b}')
+        print('Run: graphify set-roots <path0> [<path1> ...] to update the mapping.')
+        print('Build-time roots:', data.get('roots', []))
+        raise SystemExit(2)
+"
+```
+
+If exit code 1: stop and tell the user to run `/graphify <path>` first.
+If exit code 2: stop and ask the user to run `graphify set-roots` with the correct current paths before querying.
+
 ### Step 0 — Constrained query expansion (REQUIRED before traversal)
 
 graphify's `query` CLI matches nodes via case-folded substring + IDF — there is **no stemming, no synonyms, no cross-language match** inside the binary. If the user's question uses different language or different domain vocabulary than the graph's labels (user says "обработчик" / graph says "handler"; user says "authentication" / graph says "Guardian"), the literal matcher returns 0 hits and the answer collapses to noise.
