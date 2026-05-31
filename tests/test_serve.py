@@ -19,6 +19,8 @@ from graphify.serve import (
     _resolve_context_filters,
     _subgraph_to_text,
     _load_graph,
+    _abs_source,
+    _load_roots,
 )
 
 
@@ -539,3 +541,95 @@ def test_query_text_chinese_finds_routing_nodes():
     text = _query_graph_text(G, "页面路由", mode="bfs", depth=2)
     assert "No matching nodes found." not in text
     assert "路由" in text
+
+
+# ---------------------------------------------------------------------------
+# _abs_source — cross-machine path resolution
+# ---------------------------------------------------------------------------
+
+class TestAbsSource:
+    def _pairs(self, orig_list, local_list=None):
+        if local_list is None:
+            local_list = orig_list
+        return list(zip(orig_list, local_list))
+
+    def test_empty_source_returns_empty(self):
+        assert _abs_source("", self._pairs(["C:/Engine"])) == ""
+
+    def test_no_roots_returns_as_is(self):
+        assert _abs_source("Foo/Bar.cpp", []) == "Foo/Bar.cpp"
+
+    def test_relative_prepends_local_primary_root(self):
+        pairs = self._pairs(["C:/my/Engine"], ["D:/p4/Engine"])
+        assert _abs_source("Foo/Bar.cpp", pairs) == "D:/p4/Engine/Foo/Bar.cpp"
+
+    def test_relative_uses_local_not_original_root(self):
+        # local_root differs from original — must use local
+        pairs = [("C:/my/Engine", "D:/p4/Engine")]
+        assert _abs_source("Sub/File.cpp", pairs) == "D:/p4/Engine/Sub/File.cpp"
+
+    def test_absolute_matching_first_root_remapped(self):
+        pairs = [("C:/my/Engine", "D:/p4/Engine")]
+        assert _abs_source("C:/my/Engine/Foo/Bar.cpp", pairs) == "D:/p4/Engine/Foo/Bar.cpp"
+
+    def test_absolute_matching_second_root_remapped(self):
+        pairs = [
+            ("C:/my/Engine", "D:/p4/Engine"),
+            ("D:/asdf/Project", "D:/p4/Project"),
+        ]
+        assert _abs_source("D:/asdf/Project/Baz.cpp", pairs) == "D:/p4/Project/Baz.cpp"
+
+    def test_absolute_no_match_returned_normalised(self):
+        pairs = [("C:/my/Engine", "D:/p4/Engine")]
+        result = _abs_source("X:/foreign/path.cpp", pairs)
+        assert result == "X:/foreign/path.cpp"
+
+    def test_backslash_input_normalised(self):
+        pairs = [("C:/my/Engine", "D:/p4/Engine")]
+        assert _abs_source("Foo\\Bar.cpp", pairs) == "D:/p4/Engine/Foo/Bar.cpp"
+
+    def test_posix_absolute_path_remapped(self):
+        pairs = [("/home/user/Engine", "/mnt/p4/Engine")]
+        assert _abs_source("/home/user/Engine/Foo/Bar.cpp", pairs) == "/mnt/p4/Engine/Foo/Bar.cpp"
+
+    def test_root_exact_match(self):
+        pairs = [("C:/my/Engine", "D:/p4/Engine")]
+        assert _abs_source("C:/my/Engine", pairs) == "D:/p4/Engine"
+
+    def test_no_roots_same_machine_relative(self):
+        # When no root_pairs, source is returned unchanged
+        assert _abs_source("relative/path.cpp", []) == "relative/path.cpp"
+
+
+class TestLoadRoots:
+    def test_loads_roots_and_local_roots(self, tmp_path):
+        data = {"roots": ["C:/Engine", "D:/Project"], "local_roots": ["D:/p4/Engine", "D:/p4/Project"]}
+        (tmp_path / ".graphify_roots.json").write_text(json.dumps(data), encoding="utf-8")
+        pairs = _load_roots(tmp_path)
+        assert pairs == [("C:/Engine", "D:/p4/Engine"), ("D:/Project", "D:/p4/Project")]
+
+    def test_missing_local_roots_uses_original(self, tmp_path):
+        data = {"roots": ["C:/Engine"]}
+        (tmp_path / ".graphify_roots.json").write_text(json.dumps(data), encoding="utf-8")
+        pairs = _load_roots(tmp_path)
+        assert pairs == [("C:/Engine", "C:/Engine")]
+
+    def test_falls_back_to_graphify_root(self, tmp_path):
+        (tmp_path / ".graphify_root").write_text("C:/Engine\n", encoding="utf-8")
+        pairs = _load_roots(tmp_path)
+        assert pairs == [("C:/Engine", "C:/Engine")]
+
+    def test_no_files_returns_empty(self, tmp_path):
+        assert _load_roots(tmp_path) == []
+
+    def test_backslashes_normalised(self, tmp_path):
+        data = {"roots": ["C:\\Engine"], "local_roots": ["D:\\p4\\Engine"]}
+        (tmp_path / ".graphify_roots.json").write_text(json.dumps(data), encoding="utf-8")
+        pairs = _load_roots(tmp_path)
+        assert pairs == [("C:/Engine", "D:/p4/Engine")]
+
+    def test_trailing_slash_stripped(self, tmp_path):
+        data = {"roots": ["C:/Engine/"], "local_roots": ["D:/p4/Engine/"]}
+        (tmp_path / ".graphify_roots.json").write_text(json.dumps(data), encoding="utf-8")
+        pairs = _load_roots(tmp_path)
+        assert pairs == [("C:/Engine", "D:/p4/Engine")]

@@ -4,6 +4,7 @@ import json
 import math
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -14,6 +15,70 @@ try:
     import jieba as _jieba  # type: ignore[import-untyped]
 except ImportError:
     _jieba = None
+
+
+def _load_roots(graphify_out_dir: Path) -> list[tuple[str, str]]:
+    """Load (original, local) root pairs from .graphify_roots.json.
+
+    Returns a list of (original_root, local_root) pairs where:
+    - original_root: path as recorded at build time (on the build machine)
+    - local_root:    path on this machine (set via `graphify set-roots`, or same
+                     as original_root if set-roots has not been run yet)
+
+    Falls back to the legacy .graphify_root single-root file.
+    """
+    roots_file = graphify_out_dir / ".graphify_roots.json"
+    if roots_file.exists():
+        try:
+            data = json.loads(roots_file.read_text(encoding="utf-8"))
+            original = data.get("roots", [])
+            local = data.get("local_roots", original)
+            if isinstance(original, list) and original:
+                pairs = []
+                for i, orig in enumerate(original):
+                    o = str(orig).replace("\\", "/").rstrip("/")
+                    l = str(local[i]).replace("\\", "/").rstrip("/") if i < len(local) else o
+                    pairs.append((o, l))
+                return pairs
+        except Exception:
+            pass
+    # Fallback: legacy single-root file
+    legacy = graphify_out_dir / ".graphify_root"
+    if legacy.exists():
+        try:
+            root = legacy.read_text(encoding="utf-8").strip().replace("\\", "/").rstrip("/")
+            if root:
+                return [(root, root)]
+        except Exception:
+            pass
+    return []
+
+
+def _abs_source(source_file: str, root_pairs: list[tuple[str, str]]) -> str:
+    """Resolve a stored source_file to an absolute path on the current machine.
+
+    source_file values come in two forms:
+    - Relative (e.g. "Foo/Bar.cpp"): was relativized against the primary root at
+      build time. Prepend local_roots[0] (the primary root on this machine).
+    - Absolute (e.g. "D:/asdf/Project/Baz.cpp"): could not be relativized at
+      build time (different drive). Replace the matching original_root prefix
+      with the corresponding local_root.
+
+    root_pairs is a list of (original_root, local_root) from .graphify_roots.json.
+    """
+    if not source_file or not root_pairs:
+        return source_file
+    p = source_file.replace("\\", "/")
+    is_abs = (len(p) >= 2 and p[1] == ":") or p.startswith("/")
+    if not is_abs:
+        # Relative path — prepend the local version of the primary root
+        return root_pairs[0][1] + "/" + p
+    # Absolute path — find the matching original root and substitute
+    for orig, local in root_pairs:
+        if p == orig or p.startswith(orig + "/"):
+            return local + p[len(orig):]
+    # No match: return as-is (best effort — file is from an unmapped root)
+    return p
 
 
 def _load_graph(graph_path: str) -> nx.Graph:
@@ -336,12 +401,23 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
+def _subgraph_to_text(
+    G: nx.Graph,
+    nodes: set[str],
+    edges: list[tuple],
+    token_budget: int = 2000,
+    *,
+    seeds: list[str] | None = None,
+    source_resolver: Callable[[str], str] | None = None,
+) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
     seeds: exact-match nodes rendered first before the degree-sorted expansion,
     so the queried symbol always appears at the top of the output.
+    source_resolver: optional callable that maps stored source_file values to
+    absolute paths on the current machine (cross-machine portability).
     """
+    _resolve = source_resolver if source_resolver is not None else (lambda x: x)
     char_budget = token_budget * 3
     lines = []
     seed_set = set(seeds or [])
@@ -356,7 +432,7 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         # source_file / source_location / community.
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
-            f"[src={sanitize_label(str(d.get('source_file', '')))} "
+            f"[src={sanitize_label(_resolve(str(d.get('source_file', ''))))} "
             f"loc={sanitize_label(str(d.get('source_location', '')))} "
             f"community={sanitize_label(str(d.get('community', '')))}]"
         )
@@ -397,6 +473,7 @@ def _query_graph_text(
     depth: int = 3,
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
+    source_resolver: Callable[[str], str] | None = None,
 ) -> str:
     terms = _query_terms(question)
     scored = _score_nodes(G, terms)
@@ -414,7 +491,7 @@ def _query_graph_text(
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget)
+    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, source_resolver=source_resolver)
 
 
 def _find_node(G: nx.Graph, label: str) -> list[str]:
@@ -486,6 +563,15 @@ def serve(graph_path: str = "graphify-out/graph.json") -> None:
 
     G = _load_graph(graph_path)
     communities = _communities_from_graph(G)
+
+    # Cross-machine path resolution: load (original, local) root pairs from
+    # .graphify_roots.json so source_file values are returned as absolute paths
+    # valid on this machine. root_pairs is stable for the server's lifetime;
+    # if the user runs `graphify set-roots` they restart the server.
+    _root_pairs = _load_roots(Path(graph_path).parent)
+
+    def _resolve_source(sf: str) -> str:
+        return _abs_source(sf, _root_pairs)
 
     # Hot-reload state: mtime+size key lets us detect graph.json changes without
     # polling. Initialised from the file stat at startup so the first tool call
@@ -661,6 +747,7 @@ def serve(graph_path: str = "graphify-out/graph.json") -> None:
             depth=depth,
             token_budget=budget,
             context_filters=context_filter,
+            source_resolver=_resolve_source,
         )
 
     def _tool_get_node(arguments: dict) -> str:
@@ -674,7 +761,7 @@ def serve(graph_path: str = "graphify-out/graph.json") -> None:
         return "\n".join([
             f"Node: {sanitize_label(d.get('label', nid))}",
             f"  ID: {sanitize_label(nid)}",
-            f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(str(d.get('source_location', '')))}",
+            f"  Source: {sanitize_label(_resolve_source(str(d.get('source_file', ''))))} {sanitize_label(str(d.get('source_location', '')))}",
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",
@@ -719,7 +806,7 @@ def serve(graph_path: str = "graphify-out/graph.json") -> None:
             # Sanitise label and source_file (F-010).
             lines.append(
                 f"  {sanitize_label(d.get('label', n))} "
-                f"[{sanitize_label(str(d.get('source_file', '')))}]"
+                f"[{sanitize_label(_resolve_source(str(d.get('source_file', ''))))}]"
             )
         return "\n".join(lines)
 

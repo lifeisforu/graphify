@@ -1966,6 +1966,10 @@ def main() -> None:
         except Exception as exc:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
+        from graphify.serve import _load_roots, _abs_source
+        _root_pairs = _load_roots(gp.parent)
+        def _resolver(sf: str) -> str:
+            return _abs_source(sf, _root_pairs)
         print(
             _query_graph_text(
                 G,
@@ -1974,6 +1978,7 @@ def main() -> None:
                 depth=2,
                 token_budget=budget,
                 context_filters=context_filters,
+                source_resolver=_resolver,
             )
         )
     elif cmd == "affected":
@@ -2171,9 +2176,12 @@ def main() -> None:
             sys.exit(0)
         nid = matches[0]
         d = G.nodes[nid]
+        from graphify.serve import _load_roots, _abs_source
+        _root_pairs = _load_roots(gp.parent)
+        resolved_sf = _abs_source(d.get('source_file', ''), _root_pairs)
         print(f"Node: {d.get('label', nid)}")
         print(f"  ID:        {nid}")
-        print(f"  Source:    {d.get('source_file', '')} {d.get('source_location', '')}".rstrip())
+        print(f"  Source:    {resolved_sf} {d.get('source_location', '')}".rstrip())
         print(f"  Type:      {d.get('file_type', '')}")
         print(f"  Community: {d.get('community', '')}")
         print(f"  Degree:    {G.degree(nid)}")
@@ -2461,12 +2469,24 @@ def main() -> None:
         if watch_arg is not None:
             watch_path = Path(watch_arg)
         else:
-            # Try to recover the scan root saved by the last full build
-            saved = Path(_GRAPHIFY_OUT) / ".graphify_root"
-            if saved.exists():
-                watch_path = Path(saved.read_text(encoding="utf-8").strip())
-            else:
-                watch_path = Path(".")
+            # Prefer local_roots[0] from .graphify_roots.json (set via `graphify set-roots`
+            # on this machine), then fall back to .graphify_root for backwards compat.
+            roots_file = Path(_GRAPHIFY_OUT) / ".graphify_roots.json"
+            watch_path = None
+            if roots_file.exists():
+                try:
+                    data = json.loads(roots_file.read_text(encoding="utf-8"))
+                    local = data.get("local_roots", data.get("roots", []))
+                    if local:
+                        watch_path = Path(local[0])
+                except Exception:
+                    pass
+            if watch_path is None:
+                saved = Path(_GRAPHIFY_OUT) / ".graphify_root"
+                if saved.exists():
+                    watch_path = Path(saved.read_text(encoding="utf-8").strip())
+                else:
+                    watch_path = Path(".")
         if not watch_path.exists():
             print(f"error: path not found: {watch_path}", file=sys.stderr)
             sys.exit(1)
@@ -2489,6 +2509,44 @@ def main() -> None:
         else:
             print("Nothing to update or rebuild failed — check output above.", file=sys.stderr)
             sys.exit(1)
+
+    elif cmd == "set-roots":
+        # Update .graphify_roots.json with per-machine local root paths.
+        # Usage: graphify set-roots <path0> [<path1> ...]
+        # Each positional argument maps to the corresponding root index ($0, $1, …)
+        # originally recorded at build time. Only `local_roots` is updated —
+        # `roots` (the build-time paths) is preserved so serve.py can match
+        # stored absolute source_file values against the original prefixes.
+        new_local = [str(Path(a).resolve()).replace("\\", "/") for a in sys.argv[2:]]
+        if not new_local:
+            print("Usage: graphify set-roots <path0> [<path1> ...]", file=sys.stderr)
+            print("  Each path corresponds to a root index recorded in .graphify_roots.json.", file=sys.stderr)
+            sys.exit(1)
+        roots_file = Path(_GRAPHIFY_OUT) / ".graphify_roots.json"
+        if not roots_file.exists():
+            print(f"error: {roots_file} not found. Run graphify extract first.", file=sys.stderr)
+            sys.exit(1)
+        try:
+            data = json.loads(roots_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"error: could not read {roots_file}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        original = data.get("roots", [])
+        if len(new_local) != len(original):
+            print(
+                f"error: expected {len(original)} path(s) (one per root), got {len(new_local)}.",
+                file=sys.stderr,
+            )
+            print("  Build-time roots:", file=sys.stderr)
+            for i, r in enumerate(original):
+                print(f"    ${i} = {r}", file=sys.stderr)
+            sys.exit(1)
+        data["local_roots"] = new_local
+        roots_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        print("Updated root mappings:")
+        for i, (orig, loc) in enumerate(zip(original, new_local)):
+            arrow = " (unchanged)" if orig == loc else f" -> {loc}"
+            print(f"  ${i}: {orig}{arrow}")
 
     elif cmd == "hook-check":
         # Codex Desktop rejects hookSpecificOutput.additionalContext on PreToolUse.

@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 import pytest
 
-from graphify.watch import _notify_only, _WATCHED_EXTENSIONS, _rebuild_lock, _check_shrink
+from graphify.watch import _notify_only, _WATCHED_EXTENSIONS, _rebuild_lock, _check_shrink, _collect_abs_roots, _save_roots
 
 
 # --- _notify_only ---
@@ -694,3 +694,134 @@ def test_merge_changed_paths_dedupes_in_order():
         [Path("a.py")],
     )
     assert [p.as_posix() for p in merged] == ["a.py", "b.py", "c.py"]
+
+
+# --- _collect_abs_roots ---
+
+
+def _payload(*source_files):
+    return {"nodes": [{"id": str(i), "source_file": sf} for i, sf in enumerate(source_files)]}
+
+
+def test_collect_abs_roots_primary_only():
+    """No extra absolute paths → only primary root returned."""
+    payload = _payload("Foo/Bar.cpp", "Sub/Baz.cpp")
+    roots = _collect_abs_roots(payload, Path("C:/Engine"))
+    assert roots == ["C:/Engine"]
+
+
+def test_collect_abs_roots_relative_paths_ignored():
+    """Relative source_files (already relativized) don't generate extra roots."""
+    payload = _payload("src/main.py", "lib/util.py")
+    roots = _collect_abs_roots(payload, Path("/home/user/project"))
+    assert roots == ["/home/user/project"]
+
+
+def test_collect_abs_roots_abs_under_primary_ignored():
+    """Absolute paths under primary_root are already covered — not a new root."""
+    payload = _payload("C:/Engine/Src/Foo.cpp", "C:/Engine/Src/Bar.cpp")
+    roots = _collect_abs_roots(payload, Path("C:/Engine"))
+    assert roots == ["C:/Engine"]
+
+
+def test_collect_abs_roots_secondary_drive():
+    """Absolute paths on a different drive produce a secondary root."""
+    payload = _payload("Foo/Bar.cpp", "D:/Project/Baz.cpp", "D:/Project/Qux.cpp")
+    roots = _collect_abs_roots(payload, Path("C:/Engine"))
+    assert roots[0] == "C:/Engine"
+    assert "D:/Project" in roots
+    assert len(roots) == 2
+
+
+def test_collect_abs_roots_secondary_drive_common_ancestor():
+    """Multiple abs paths under the same secondary tree resolve to their deepest common ancestor."""
+    payload = _payload(
+        "D:/Project/ModA/Foo.cpp",
+        "D:/Project/ModB/Bar.cpp",
+    )
+    roots = _collect_abs_roots(payload, Path("C:/Engine"))
+    assert "D:/Project" in roots
+
+
+def test_collect_abs_roots_posix_secondary():
+    """POSIX secondary path (different prefix) adds an extra root."""
+    payload = _payload("src/main.py", "/mnt/shared/lib/util.py")
+    roots = _collect_abs_roots(payload, Path("/home/user/project"))
+    assert roots[0] == "/home/user/project"
+    assert any(r.startswith("/mnt/shared") for r in roots)
+
+
+def test_collect_abs_roots_deduplicates():
+    """Same absolute file appearing multiple times produces a single secondary root entry."""
+    payload = _payload("D:/Lib/Foo.cpp", "D:/Lib/Foo.cpp", "D:/Lib/Bar.cpp")
+    roots = _collect_abs_roots(payload, Path("C:/Engine"))
+    assert roots.count("D:/Lib") == 1
+
+
+def test_collect_abs_roots_empty_payload():
+    payload = {"nodes": [], "edges": [], "hyperedges": []}
+    roots = _collect_abs_roots(payload, Path("C:/Engine"))
+    assert roots == ["C:/Engine"]
+
+
+def test_collect_abs_roots_edges_and_hyperedges():
+    """source_file in edges and hyperedges also contributes to root discovery."""
+    payload = {
+        "nodes": [],
+        "edges": [{"source": "a", "target": "b", "source_file": "D:/Lib/Edge.cpp"}],
+        "hyperedges": [{"members": [], "source_file": "E:/Other/He.cpp"}],
+    }
+    roots = _collect_abs_roots(payload, Path("C:/Engine"))
+    assert any("D:/Lib" in r for r in roots)
+    assert any("E:/Other" in r for r in roots)
+
+
+def test_collect_abs_roots_same_drive_two_separate_roots():
+    """Two distinct secondary roots on the same drive must produce two separate entries.
+
+    D:/Engine and D:/Project share drive D: but differ at the first subdirectory,
+    so they must not collapse to the drive root D:/.
+    """
+    payload = _payload("D:/Engine/Foo.cpp", "D:/Project/Bar.cpp")
+    roots = _collect_abs_roots(payload, Path("C:/Primary"))
+    secondary = [r for r in roots if r != "C:/Primary"]
+    assert len(secondary) == 2
+    assert "D:/Engine" in secondary
+    assert "D:/Project" in secondary
+
+
+# --- _save_roots ---
+
+
+def test_save_roots_creates_file(tmp_path):
+    payload = _payload("Foo/Bar.cpp")
+    _save_roots(payload, Path("C:/Engine"), tmp_path)
+    f = tmp_path / ".graphify_roots.json"
+    assert f.exists()
+    data = json.loads(f.read_text(encoding="utf-8"))
+    assert data["roots"] == ["C:/Engine"]
+
+
+def test_save_roots_idempotent_mtime(tmp_path):
+    """Writing the same roots twice must not change mtime (avoids spurious p4 checkouts)."""
+    payload = _payload("Foo/Bar.cpp")
+    _save_roots(payload, Path("C:/Engine"), tmp_path)
+    f = tmp_path / ".graphify_roots.json"
+    mtime1 = f.stat().st_mtime
+    _save_roots(payload, Path("C:/Engine"), tmp_path)
+    assert f.stat().st_mtime == mtime1
+
+
+def test_save_roots_updates_when_changed(tmp_path):
+    """When roots change the file IS rewritten with new content."""
+    payload1 = _payload("Foo/Bar.cpp")
+    _save_roots(payload1, Path("C:/Engine"), tmp_path)
+    f = tmp_path / ".graphify_roots.json"
+    content1 = f.read_text(encoding="utf-8")
+
+    payload2 = _payload("Foo/Bar.cpp", "D:/Project/Baz.cpp")
+    _save_roots(payload2, Path("C:/Engine"), tmp_path)
+    content2 = f.read_text(encoding="utf-8")
+    assert content1 != content2
+    data = json.loads(content2)
+    assert any("D:/Project" in r for r in data["roots"])

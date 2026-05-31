@@ -220,6 +220,92 @@ def _relativize_source_files(payload: dict, root: Path) -> None:
                 continue
 
 
+def _collect_abs_roots(payload: dict, primary_root: Path) -> list[str]:
+    """Return ordered list of unique source roots from payload's source_file values.
+
+    The primary_root (main watch root) is always first. Additional roots are
+    inferred from absolute source_file paths that fell outside primary_root
+    (paths from secondary source trees on other drives that _relativize_source_files
+    could not make relative).
+
+    Absolute paths that share no root with primary_root are grouped by their
+    common ancestor: paths on the same drive with a shared prefix are merged
+    into the deepest common directory, giving one root entry per secondary tree.
+    """
+    roots: list[str] = [primary_root.as_posix().rstrip("/")]
+
+    # Collect all absolute source_file values not covered by any known root
+    extra_paths: list[Path] = []
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in payload.get(bucket, []):
+            sf = item.get("source_file")
+            if not sf:
+                continue
+            p = sf.replace("\\", "/")
+            is_abs = (len(p) >= 2 and p[1] == ":") or p.startswith("/")
+            if not is_abs:
+                continue
+            if any(p == r or p.startswith(r + "/") for r in roots):
+                continue
+            extra_paths.append(Path(sf))
+
+    # Group by (drive, first-subdirectory) so two separate trees on the same
+    # drive — e.g. D:/Engine and D:/Project — stay in distinct groups instead
+    # of collapsing to the drive root D:/.  Each group's common ancestor then
+    # becomes one secondary root entry.
+    groups: dict[tuple[str, str], list[Path]] = {}
+    for ep in extra_paths:
+        parts = ep.parts
+        drive = ep.drive or parts[0]
+        first_sub = parts[1] if len(parts) > 1 else ""
+        groups.setdefault((drive, first_sub), []).append(ep)
+
+    for paths_in_group in groups.values():
+        # Find common ancestor via shared parts, then trim the last component if
+        # it is a filename (i.e. the common prefix ended at a leaf, not a dir).
+        parts_list = [p.parts for p in paths_in_group]
+        min_len = min(len(pts) for pts in parts_list)
+        common_len = 0
+        for i in range(min_len):
+            if len({pts[i] for pts in parts_list}) == 1:
+                common_len += 1
+            else:
+                break
+        if common_len == 0:
+            continue
+        # If every path in the group has the same total length as common_len the
+        # common prefix IS the file path — use its parent instead.
+        if all(len(pts) == common_len for pts in parts_list):
+            common_len -= 1
+        if common_len == 0:
+            continue
+        common = Path(*paths_in_group[0].parts[:common_len]).as_posix().rstrip("/")
+        if common not in roots:
+            roots.append(common)
+
+    return roots
+
+
+def _save_roots(payload: dict, primary_root: Path, out: Path) -> None:
+    """Write graphify-out/.graphify_roots.json with the ordered root list.
+
+    Each root maps to a positional index ($0, $1, ...) that agents use when
+    asking the user to supply per-machine path mappings via `graphify set-roots`.
+    The file is only written when the root list changes to avoid spurious mtime
+    updates on shared/version-controlled graphify-out directories.
+    """
+    roots = _collect_abs_roots(payload, primary_root)
+    roots_file = out / ".graphify_roots.json"
+    new_content = json.dumps({"roots": roots}, ensure_ascii=False)
+    if roots_file.exists():
+        try:
+            if roots_file.read_text(encoding="utf-8").strip() == new_content:
+                return
+        except Exception:
+            pass
+    roots_file.write_text(new_content, encoding="utf-8")
+
+
 def _node_community_map(graph_data: dict) -> dict[str, int]:
     out: dict[str, int] = {}
     for node in graph_data.get("nodes", []):
@@ -566,6 +652,7 @@ def _rebuild_code(
         _relativize_source_files(result, project_root)
         out.mkdir(exist_ok=True)
         (out / ".graphify_root").write_text(str(watch_root), encoding="utf-8")
+        _save_roots(result, project_root, out)
 
         if no_cluster:
             # Normalise to "links" key so schema is consistent with the full clustered path.
