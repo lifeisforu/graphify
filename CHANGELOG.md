@@ -2,6 +2,11 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.8.35 (2026-06-01)
+
+- Feat: `graphify prewarm <path> ...` CLI command — pre-warms the content-addressed AST cache for many paths in one parallel pass (single ProcessPool across every file of every path) without building a graph, so a later `update`/`extract` sharing the same cache root only does cross-file resolution. Exposes the previously library-only `cache_dirs`/`cache_files` (+ `--from <listfile>` for `cache_dirs_from`/`cache_files_from`); flags: `--files`, `--cache-root <dir>`, `--max-workers N`, `--follow-symlinks`
+- Docs: `set-roots` is now listed in `graphify --help` (the command already existed but was missing from the usage listing)
+
 ## 0.8.26 (2026-05-30)
 
 - Feat: `find_import_cycles(G)` in `analyze.py` detects file-level circular import dependencies — collapses symbol graph to file-level directed import graph, finds simple cycles via Johnson's algorithm, deduplicates rotations, renders `## Import Cycles` section in `GRAPH_REPORT.md` (#961)

@@ -515,3 +515,84 @@ def test_second_extract_after_file_change_reflects_update(src_pkg):
 
     assert any("admin" in nid for nid in ids2), "Admin class should appear after file change"
     assert ids2 != ids1
+
+
+# ---------------------------------------------------------------------------
+# CLI: `graphify prewarm` (exposes cache_dirs / cache_files over the CLI)
+# ---------------------------------------------------------------------------
+import sys
+from graphify.__main__ import main
+
+
+def _run_cli(monkeypatch, argv):
+    """Invoke main() with a patched argv; return the SystemExit code (0 if none)."""
+    monkeypatch.setattr(sys, "argv", ["graphify"] + argv)
+    try:
+        main()
+    except SystemExit as exc:
+        return exc.code if exc.code is not None else 0
+    return 0
+
+
+def test_cli_prewarm_dirs_populates_cache(dir_tree, monkeypatch, capsys):
+    """`graphify prewarm <dir> <dir> --cache-root R` caches every file under the dirs."""
+    root, d1, d2 = dir_tree
+    code = _run_cli(monkeypatch, ["prewarm", str(d1), str(d2), "--cache-root", str(root)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "2 file(s) newly cached" in out
+    assert load_cached(d1 / "mod1.py", root=root) is not None
+    assert load_cached(d2 / "mod2.py", root=root) is not None
+
+
+def test_cli_prewarm_files_flag(py_files, monkeypatch, capsys):
+    """`graphify prewarm --files <file> ...` caches the individual files."""
+    root, files = py_files
+    code = _run_cli(monkeypatch, ["prewarm", "--files", *[str(f) for f in files], "--cache-root", str(root)])
+    assert code == 0
+    for f in files:
+        assert load_cached(f, root=root) is not None
+
+
+def test_cli_prewarm_from_listfile(dir_tree, tmp_path, monkeypatch):
+    """`graphify prewarm --from <listfile>` reads directory paths from a text file."""
+    root, d1, d2 = dir_tree
+    list_file = tmp_path / "dirs.txt"
+    list_file.write_text(f"# dirs\n{d1}\n{d2}\n", encoding="utf-8")
+    code = _run_cli(monkeypatch, ["prewarm", "--from", str(list_file), "--cache-root", str(root)])
+    assert code == 0
+    assert load_cached(d1 / "mod1.py", root=root) is not None
+
+
+def test_cli_prewarm_shares_cache_with_extract(src_pkg, monkeypatch):
+    """After `prewarm`, a subsequent extract() sharing the cache root finds every file cached."""
+    root, pkg, files = src_pkg
+    code = _run_cli(monkeypatch, ["prewarm", str(pkg), "--cache-root", str(root)])
+    assert code == 0
+    for f in files:
+        assert load_cached(f, root=root) is not None
+
+
+def test_cli_prewarm_no_args_is_usage_error(monkeypatch):
+    """`graphify prewarm` with no paths exits 2 (usage error)."""
+    assert _run_cli(monkeypatch, ["prewarm"]) == 2
+
+
+def test_cli_prewarm_missing_path_errors(tmp_path, monkeypatch):
+    """`graphify prewarm <nonexistent>` exits 1."""
+    missing = tmp_path / "does_not_exist"
+    assert _run_cli(monkeypatch, ["prewarm", str(missing)]) == 1
+
+
+def test_cli_prewarm_paths_and_from_conflict(dir_tree, tmp_path, monkeypatch):
+    """Passing both positional paths and --from is rejected with exit 2."""
+    root, d1, _ = dir_tree
+    list_file = tmp_path / "dirs.txt"
+    list_file.write_text(f"{d1}\n", encoding="utf-8")
+    assert _run_cli(monkeypatch, ["prewarm", str(d1), "--from", str(list_file)]) == 2
+
+
+def test_cli_prewarm_file_without_flag_errors(py_files, monkeypatch):
+    """A file passed without --files (default expects directories) exits 1."""
+    root, files = py_files
+    assert _run_cli(monkeypatch, ["prewarm", str(files[0]), "--cache-root", str(root)]) == 1

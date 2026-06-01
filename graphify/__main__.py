@@ -1475,6 +1475,12 @@ def main() -> None:
         print("    --force                 overwrite graph.json even if the rebuild has fewer nodes")
         print("                            (also: GRAPHIFY_FORCE=1 env var; use after refactors that delete code)")
         print("    --no-cluster            skip clustering, write raw extraction only")
+        print("  prewarm <path> [<path> ...]  pre-warm the AST cache in parallel, no graph build")
+        print("    --files                 treat paths as files (default: directories, walked recursively)")
+        print("    --from <listfile>       read paths from a text file (one per line; # comments ok)")
+        print("    --cache-root <dir>      shared cache root so a later build/update reuses these entries")
+        print("    --max-workers N         parallel workers (default: CPU count, or GRAPHIFY_MAX_WORKERS)")
+        print("    --follow-symlinks       follow symlinks when walking directories")
         print("  cluster-only <path>     rerun clustering on an existing graph.json and regenerate report")
         print("    --no-viz                skip graph.html generation (useful for >5000 node graphs / CI)")
         print("    --graph <path>          path to graph.json (default <path>/graphify-out/graph.json)")
@@ -1494,6 +1500,8 @@ def main() -> None:
         print("    --nodes N1 N2 ...       source node labels cited in the answer")
         print("    --memory-dir DIR        memory directory (default: graphify-out/memory)")
         print("  check-update <path>     check needs_update flag and notify if semantic re-extraction is pending (cron-safe)")
+        print("  set-roots <path0> [<path1> ...]  remap this machine's local roots in .graphify_roots.json")
+        print("                            (one path per build-time root index; for cross-machine path resolution)")
         print("  tree                    emit a D3 v7 collapsible-tree HTML for graph.json")
         print("    --graph PATH            path to graph.json (default graphify-out/graph.json)")
         print("    --output HTML           output path (default graphify-out/GRAPH_TREE.html)")
@@ -2512,6 +2520,85 @@ def main() -> None:
         else:
             print("Nothing to update or rebuild failed — check output above.", file=sys.stderr)
             sys.exit(1)
+
+    elif cmd == "prewarm":
+        # Pre-warm the content-addressed AST cache for many paths in ONE parallel pass
+        # (a single ProcessPool across every file of every path), WITHOUT building a graph.
+        # A later `graphify update` / extract() that shares the same cache root then only has
+        # to do cross-file resolution — the per-file AST extraction is already cached. This
+        # exposes the library functions graphify.extract.cache_dirs / cache_files (+ their
+        # *_from list-file variants), which previously had no CLI entry point.
+        from graphify.extract import (
+            cache_dirs, cache_files, cache_dirs_from, cache_files_from,
+        )
+        args = sys.argv[2:]
+        as_files = False
+        follow_symlinks = False
+        cache_root = None
+        max_workers = None
+        list_file = None
+        paths = []
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "--files":
+                as_files = True; i += 1; continue
+            if a == "--follow-symlinks":
+                follow_symlinks = True; i += 1; continue
+            if a == "--from":
+                if i + 1 >= len(args):
+                    print("error: --from requires a list-file path", file=sys.stderr); sys.exit(2)
+                list_file = args[i + 1]; i += 2; continue
+            if a == "--cache-root":
+                if i + 1 >= len(args):
+                    print("error: --cache-root requires a directory path", file=sys.stderr); sys.exit(2)
+                cache_root = args[i + 1]; i += 2; continue
+            if a == "--max-workers":
+                if i + 1 >= len(args):
+                    print("error: --max-workers requires an integer", file=sys.stderr); sys.exit(2)
+                try:
+                    max_workers = int(args[i + 1])
+                except ValueError:
+                    print(f"error: --max-workers must be an integer, got {args[i + 1]!r}", file=sys.stderr); sys.exit(2)
+                if max_workers <= 0:
+                    print("error: --max-workers must be a positive integer", file=sys.stderr); sys.exit(2)
+                i += 2; continue
+            if a.startswith("-"):
+                print(f"error: unknown prewarm option: {a}", file=sys.stderr); sys.exit(2)
+            paths.append(a); i += 1
+
+        if list_file and paths:
+            print("error: pass either positional paths OR --from <listfile>, not both", file=sys.stderr)
+            sys.exit(2)
+        if not list_file and not paths:
+            print("Usage: graphify prewarm <path> [<path> ...] | --from <listfile> "
+                  "[--files] [--cache-root <dir>] [--max-workers N] [--follow-symlinks]", file=sys.stderr)
+            sys.exit(2)
+
+        croot = Path(cache_root) if cache_root else None
+        if list_file:
+            lf = Path(list_file)
+            if not lf.is_file():
+                print(f"error: list file not found: {lf}", file=sys.stderr); sys.exit(1)
+            if as_files:
+                n = cache_files_from(lf, croot, max_workers=max_workers)
+            else:
+                n = cache_dirs_from(lf, croot, follow_symlinks=follow_symlinks, max_workers=max_workers)
+        else:
+            objs = [Path(p) for p in paths]
+            missing = [str(p) for p in objs if not p.exists()]
+            if missing:
+                print(f"error: path(s) not found: {', '.join(missing)}", file=sys.stderr); sys.exit(1)
+            if as_files:
+                n = cache_files(objs, croot, max_workers=max_workers)
+            else:
+                not_dirs = [str(p) for p in objs if not p.is_dir()]
+                if not_dirs:
+                    print(f"error: not a directory (use --files for individual files): {', '.join(not_dirs)}", file=sys.stderr)
+                    sys.exit(1)
+                n = cache_dirs(objs, croot, follow_symlinks=follow_symlinks, max_workers=max_workers)
+        print(f"Pre-warmed AST cache: {n} file(s) newly cached.")
+        sys.exit(0)
 
     elif cmd == "set-roots":
         # Update .graphify_roots.json with per-machine local root paths.

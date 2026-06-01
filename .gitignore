@@ -4,6 +4,7 @@ env/
 __pycache__/
 *.pyc
 pypi_token.txt
+pypi.txt
 *.egg-info/
 .eggs/
 dist/
