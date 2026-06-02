@@ -2,7 +2,7 @@
 import textwrap
 from pathlib import Path
 import pytest
-from graphify.extract import extract_python
+from graphify.extract import extract_python, extract_cpp
 from graphify.build import build_from_json
 
 
@@ -261,3 +261,192 @@ def test_decorated_method_node_id_is_class_qualified(tmp_path):
                 f"rationale node {r_id} for ``.{decorated_name}()`` is orphaned "
                 f"(degree 0) after build_from_json"
             )
+
+
+# ── C/C++ rationale extraction (UE-aware) ─────────────────────────────────────
+
+def _write_cpp(tmp_path: Path, code: str, name: str = "Sample.h") -> Path:
+    p = tmp_path / name
+    p.write_text(textwrap.dedent(code), encoding="utf-8")
+    return p
+
+
+def _labels_for(result, target_label):
+    """Comment texts of rationale nodes attached to the node labelled target_label."""
+    by_id = {n["id"]: n for n in result["nodes"]}
+    target_ids = {n["id"] for n in result["nodes"] if n.get("label") == target_label}
+    out = []
+    for e in result["edges"]:
+        if e.get("relation") == "rationale_for" and e["target"] in target_ids:
+            src = by_id.get(e["source"])
+            if src:
+                out.append(src["label"])
+    return out
+
+
+def test_cpp_enum_and_enumerator_nodes_created(tmp_path):
+    path = _write_cpp(tmp_path, '''
+        enum class EState : unsigned char
+        {
+            Deferred,
+            Immediate,
+        };
+    ''')
+    result = extract_cpp(path)
+    labels = {n.get("label") for n in result["nodes"]}
+    assert "EState" in labels
+    assert "EState::Immediate" in labels
+    assert "EState::Deferred" in labels
+
+
+def test_cpp_enumerator_doc_comment_attaches(tmp_path):
+    path = _write_cpp(tmp_path, '''
+        enum class EState : unsigned char
+        {
+            Deferred,
+            /// inflight even while a request is mid-flight, bypassing the limit.
+            Immediate,
+        };
+    ''')
+    result = extract_cpp(path)
+    attached = _labels_for(result, "EState::Immediate")
+    assert any("inflight" in t for t in attached), attached
+
+
+def test_cpp_class_doc_block_attaches(tmp_path):
+    path = _write_cpp(tmp_path, '''
+        /**
+         * Owns movement; forces velocity to zero while inflight.
+         */
+        class UMover
+        {
+        };
+    ''')
+    result = extract_cpp(path)
+    attached = _labels_for(result, "UMover")
+    assert any("velocity to zero" in t for t in attached), attached
+
+
+def test_cpp_method_prototype_node_and_doc(tmp_path):
+    path = _write_cpp(tmp_path, '''
+        class UMover
+        {
+        public:
+            /// Returns the world-space velocity; zero while inflight.
+            FVector GetVelocity() const;
+        };
+    ''')
+    result = extract_cpp(path)
+    labels = {n.get("label") for n in result["nodes"]}
+    assert ".GetVelocity()" in labels
+    attached = _labels_for(result, ".GetVelocity()")
+    assert any("world-space velocity" in t for t in attached), attached
+
+
+def test_cpp_member_variable_leading_and_trailing_comment(tmp_path):
+    path = _write_cpp(tmp_path, '''
+        class UMover
+        {
+            /// The maximum allowed movement speed for this mover.
+            float MaxSpeed;
+            int Health; // current hit points for the owning actor
+        };
+    ''')
+    result = extract_cpp(path)
+    assert any("maximum allowed movement" in t for t in _labels_for(result, "MaxSpeed"))
+    assert any("hit points" in t for t in _labels_for(result, "Health"))
+
+
+def test_cpp_marker_comment_goes_to_file_node(tmp_path):
+    path = _write_cpp(tmp_path, '''
+        void Build()
+        {
+            // TODO: must run before linking or the build will fail outright
+            return;
+        }
+    ''')
+    result = extract_cpp(path)
+    file_nodes = [n for n in result["nodes"]
+                  if n.get("label", "").endswith(".h")]
+    assert file_nodes
+    attached = _labels_for(result, file_nodes[0]["label"])
+    assert any("TODO" in t for t in attached), attached
+
+
+def test_cpp_short_comment_ignored(tmp_path):
+    path = _write_cpp(tmp_path, '''
+        class UMover
+        {
+            int X; // ok
+        };
+    ''')
+    result = extract_cpp(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert rationale == [], rationale
+
+
+def test_cpp_license_header_not_attached(tmp_path):
+    path = _write_cpp(tmp_path, '''
+        // Copyright Foo. All Rights Reserved. This header is license boilerplate.
+        #pragma once
+
+        class UMover
+        {
+        };
+    ''')
+    result = extract_cpp(path)
+    assert not any("Copyright" in n["label"]
+                   for n in result["nodes"] if n.get("file_type") == "rationale")
+
+
+def test_cpp_ue_macros_do_not_create_junk_nodes(tmp_path):
+    path = _write_cpp(tmp_path, '''
+        UENUM(BlueprintType)
+        enum class EState : unsigned char { A, B };
+
+        UCLASS()
+        class UMover : public UActorComponent
+        {
+            GENERATED_BODY()
+        public:
+            UFUNCTION(BlueprintCallable)
+            FVector GetVelocity() const;
+
+            UPROPERTY(EditAnywhere, Category="Movement")
+            float MaxSpeed;
+        };
+    ''')
+    result = extract_cpp(path)
+    labels = {n.get("label") for n in result["nodes"]}
+    # No reflection-macro junk nodes.
+    for junk in ("UPROPERTY", "UFUNCTION", "UCLASS", "UENUM", "GENERATED_BODY"):
+        assert junk not in labels, f"{junk} leaked as a node"
+    # The macros must not break the declarations that follow them.
+    assert ".GetVelocity()" in labels, "UFUNCTION broke the method declaration"
+    assert "MaxSpeed" in labels, "UPROPERTY broke the field declaration"
+    assert "EState" in labels and "UMover" in labels
+
+
+def test_cpp_rationale_for_edges_resolve_to_nodes(tmp_path):
+    path = _write_cpp(tmp_path, '''
+        UCLASS()
+        class UMover
+        {
+            GENERATED_BODY()
+        public:
+            /// Returns the world-space velocity; zero while inflight.
+            UFUNCTION()
+            FVector GetVelocity() const;
+        };
+    ''')
+    result = extract_cpp(path)
+    node_ids = {n["id"] for n in result["nodes"]}
+    rationale_edges = [e for e in result["edges"] if e.get("relation") == "rationale_for"]
+    assert rationale_edges
+    for e in rationale_edges:
+        assert e["target"] in node_ids
+        assert e.get("confidence") == "EXTRACTED"
+    # Survives graph construction without orphaning the rationale node.
+    g = build_from_json(result)
+    for e in rationale_edges:
+        assert e["source"] in g.nodes and g.degree(e["source"]) > 0

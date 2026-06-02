@@ -2,6 +2,12 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.8.36 (2026-06-02)
+
+- Feat: C/C++ doc-comment (rationale) extraction, UE-aware. Doxygen `///` / `//!` / `/** */` / `/*! */`, contiguous `//` runs, and trailing inline comments are pulled in as `rationale` nodes linked to the documented code node via `rationale_for` edges; `// NOTE:`/`TODO:`/`HACK:`/`FIXME:`/… markers attach to the file node as a debt map. Leading comments attach to the next real declaration (blank lines and reflection macros are skipped), so file-top license headers don't latch onto the first class. Mirrors the existing Python rationale pass for `extract_c`/`extract_cpp`.
+- Feat: C/C++ headers (`.h`) now parse with the C++ grammar so header classes/structs and their declarations become nodes (UE doc-comments live on header declarations). C/C++ enum definitions emit an enum node plus one node per enumerator (`EnumName::Value`). Member-function prototypes get a `method` edge + `.name()` label.
+- Fix: UE reflection macros (`UCLASS`/`UFUNCTION`/`UPROPERTY`/`USTRUCT`/`UENUM`/`UINTERFACE`/`UDELEGATE`/`GENERATED_BODY` …) are neutralized (blanked, position-preserving) before parsing. Without a preprocessor tree-sitter-cpp mis-parsed them — `GENERATED_BODY()` was read as a member function whose initializer list swallowed the following declaration into an ERROR node, dropping the first method/field after it — and they leaked as bogus global type-reference nodes that collapsed every UE class into a god node.
+
 ## 0.8.35 (2026-06-01)
 
 - Feat: `graphify prewarm <path> ...` CLI command — pre-warms the content-addressed AST cache for many paths in one parallel pass (single ProcessPool across every file of every path) without building a graph, so a later `update`/`extract` sharing the same cache root only does cross-file resolution. Exposes the previously library-only `cache_dirs`/`cache_files` (+ `--from <listfile>` for `cache_dirs_from`/`cache_files_from`); flags: `--files`, `--cache-root <dir>`, `--max-workers N`, `--follow-symlinks`

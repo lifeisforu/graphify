@@ -1028,6 +1028,61 @@ _C_PRIMITIVE_TYPE_NODES = frozenset({
 })
 
 
+# UE reflection macros parse as bogus type_identifiers (e.g.
+# `UPROPERTY(EditAnywhere) float X;` yields a "UPROPERTY" type) or as calls.
+# They are not real types, and collected globally they collapse into god nodes
+# that wire every UE class together — ruining community detection. Drop them.
+_UE_REFLECTION_MACROS = frozenset({
+    "UPROPERTY", "UFUNCTION", "UCLASS", "USTRUCT", "UENUM", "UINTERFACE",
+    "UDELEGATE", "UPARAM", "UMETA",
+    "GENERATED_BODY", "GENERATED_UCLASS_BODY", "GENERATED_USTRUCT_BODY",
+    "GENERATED_IINTERFACE_BODY", "GENERATED_UINTERFACE_BODY",
+})
+
+_UE_MACRO_INVOCATION_RE = re.compile(
+    r"\b(?:" + "|".join(sorted(_UE_REFLECTION_MACROS)) + r")\s*\(")
+
+
+def _strip_ue_macros(source: bytes) -> bytes:
+    """Blank out UE reflection-macro invocations (UCLASS(...), GENERATED_BODY(),
+    UFUNCTION(...), UPROPERTY(...), …) before parsing.
+
+    Without a C preprocessor, tree-sitter-cpp mis-parses these: GENERATED_BODY()
+    is read as a member function whose initializer list swallows the next real
+    declaration into an ERROR node (so the first method/field after it gets no
+    node). Replacing each `MACRO(...)` span with spaces — preserving newlines so
+    line/byte offsets stay exact — lets the surrounding C++ parse cleanly.
+    Returns the input unchanged when no UE macros are present.
+    """
+    try:
+        text = source.decode("utf-8")
+    except UnicodeDecodeError:
+        return source  # don't risk shifting byte offsets on non-UTF-8 input
+    if "GENERATED_" not in text and not any(
+            m in text for m in ("UCLASS", "UFUNCTION", "UPROPERTY", "USTRUCT",
+                                 "UENUM", "UINTERFACE", "UDELEGATE")):
+        return source
+    out = list(text)
+    n = len(text)
+    for m in _UE_MACRO_INVOCATION_RE.finditer(text):
+        depth = 0
+        i = m.end() - 1  # at the opening '('
+        while i < n:
+            ch = text[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    i += 1
+                    break
+            i += 1
+        for j in range(m.start(), i):
+            if out[j] not in ("\n", "\r"):
+                out[j] = " "
+    return "".join(out).encode("utf-8")
+
+
 def _c_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a C type expression; append (name, role) tuples for user-defined types.
     Skips primitive types and qualifiers; recognises type_identifier."""
@@ -1036,7 +1091,7 @@ def _c_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str
     t = node.type
     if t == "type_identifier":
         text = _read_text(node, source)
-        if text:
+        if text and text not in _UE_REFLECTION_MACROS:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t in ("pointer_declarator", "reference_declarator", "array_declarator",
@@ -1056,7 +1111,7 @@ def _cpp_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[s
     t = node.type
     if t == "type_identifier":
         text = _read_text(node, source)
-        if text:
+        if text and text not in _UE_REFLECTION_MACROS:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "qualified_identifier":
@@ -1068,7 +1123,7 @@ def _cpp_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[s
         name_node = node.child_by_field_name("name")
         if name_node is not None:
             text = _read_text(name_node, source)
-            if text:
+            if text and text not in _UE_REFLECTION_MACROS:
                 out.append((text, "generic_arg" if generic else "type"))
         args_node = node.child_by_field_name("arguments")
         if args_node is not None:
@@ -2158,6 +2213,9 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
     try:
         parser = Parser(language)
         source = path.read_bytes()
+        if config.ts_module in ("tree_sitter_cpp", "tree_sitter_c"):
+            # Neutralize UE reflection macros so they don't wreck the parse.
+            source = _strip_ue_macros(source)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -2239,6 +2297,38 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                 if not has_source:
                     for child in node.children:
                         walk(child, parent_class_nid)
+            return
+
+        # C/C++ enums: neither config lists enum_specifier in class_types, so
+        # handle it explicitly. Emit a node for the enum and one per enumerator
+        # (label "EnumName::Value") so doc-comments can attach to the exact
+        # value (e.g. EPN_COIProviderPriority::Immediate). Only definitions
+        # (those with a body) are emitted — forward decls / type references are
+        # skipped to avoid stub nodes.
+        if (config.ts_module in ("tree_sitter_cpp", "tree_sitter_c")
+                and t == "enum_specifier"):
+            name_node = node.child_by_field_name("name")
+            body = node.child_by_field_name("body")
+            if name_node is not None and body is not None:
+                enum_name = _read_text(name_node, source)
+                enum_nid = _make_id(stem, enum_name)
+                line = node.start_point[0] + 1
+                add_node(enum_nid, enum_name, line)
+                if parent_class_nid:
+                    add_edge(parent_class_nid, enum_nid, "defines", line, context="enum")
+                else:
+                    add_edge(file_nid, enum_nid, "contains", line)
+                for child in body.children:
+                    if child.type != "enumerator":
+                        continue
+                    en_name_node = child.child_by_field_name("name")
+                    if en_name_node is None:
+                        continue
+                    en_name = _read_text(en_name_node, source)
+                    en_line = child.start_point[0] + 1
+                    en_nid = _make_id(enum_nid, en_name)
+                    add_node(en_nid, f"{enum_name}::{en_name}", en_line)
+                    add_edge(enum_nid, en_nid, "defines", en_line, context="enumerator")
             return
 
         # Class types
@@ -2788,18 +2878,31 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                         if target_nid != parent_class_nid:
                             add_edge(parent_class_nid, target_nid, "references",
                                      line, context=ctx)
-            # Emit a node for each data member. Use children_by_field_name so we
-            # only visit declarator children, not the type node (which would give
-            # us the type name, not the field name). Handles int x, y; via
-            # multiple declarator fields and static const int MAX = 100; via the
-            # init_declarator → field_identifier recursion in _get_cpp_func_name.
+            # Emit a node for each member. Data members get a "defines"/field
+            # edge; method prototypes (declarator wraps a function_declarator)
+            # get a "method" edge + `.name()` label so a header declaration and
+            # its .cpp definition read consistently and doc-comments can attach.
+            # Uses children_by_field_name so we only visit declarator children,
+            # not the type node. Handles int x, y; via multiple declarator fields
+            # and static const int MAX = 100; via the init_declarator →
+            # field_identifier recursion in _get_cpp_func_name.
             for decl in decls:
                 name = _get_cpp_func_name(decl, source)
-                if name:
-                    line = decl.start_point[0] + 1
-                    field_nid = _make_id(parent_class_nid, name)
-                    add_node(field_nid, name, line)
-                    add_edge(parent_class_nid, field_nid, "defines", line, context="field")
+                if not name:
+                    continue
+                d_line = decl.start_point[0] + 1
+                decl_is_method = (
+                    decl.type == "function_declarator"
+                    or (decl.type in ("pointer_declarator", "reference_declarator")
+                        and any(c.type == "function_declarator" for c in decl.children))
+                )
+                member_nid = _make_id(parent_class_nid, name)
+                if decl_is_method:
+                    add_node(member_nid, f".{name}()", d_line)
+                    add_edge(parent_class_nid, member_nid, "method", d_line)
+                else:
+                    add_node(member_nid, name, d_line)
+                    add_edge(parent_class_nid, member_nid, "defines", d_line, context="field")
             return
 
         # Function types
@@ -3584,6 +3687,174 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
             _add_rationale(stripped, lineno, file_nid)
 
 
+# ── C/C++ rationale extraction ────────────────────────────────────────────────
+
+_CPP_RATIONALE_PREFIXES = ("// NOTE:", "// IMPORTANT:", "// HACK:", "// WHY:",
+                           "// RATIONALE:", "// TODO:", "// FIXME:", "//!")
+
+# Comments shorter than this (after stripping markers) are dropped as noise
+# (e.g. "// ok", "// loop").
+_CPP_COMMENT_MIN_LEN = 8
+
+
+def _strip_cpp_comment(text: str) -> str:
+    """Strip C/C++ comment markers (// /// //! //< /* */ /** */ /*! */) and
+    collapse a multi-line block to a single normalized line."""
+    t = text.strip()
+    out_lines: list[str] = []
+    if t.startswith("/*"):
+        t = t[2:]
+        if t.endswith("*/"):
+            t = t[:-2]
+        for ln in t.splitlines():
+            ln = ln.strip()
+            if ln.startswith("*"):
+                ln = ln[1:].strip()
+            ln = ln.lstrip("!<").strip()
+            if ln:
+                out_lines.append(ln)
+    else:
+        for ln in t.splitlines():
+            ln = ln.strip()
+            while ln.startswith("/"):
+                ln = ln[1:]
+            ln = ln.lstrip("!<").strip()
+            if ln:
+                out_lines.append(ln)
+    return " ".join(out_lines).strip()
+
+
+def _extract_cpp_rationale(path: Path, result: dict) -> None:
+    """Post-pass: pull C/C++ doc-comments into the graph as `rationale` nodes.
+
+    Three sources, mirroring the Python pass:
+      1. Leading comments — a comment (block or contiguous //-run) immediately
+         above a declaration attaches to that declaration's node.
+      2. Trailing comments — a comment sharing its line with a member/enumerator
+         attaches to that node (e.g. `float Health; // 체력`).
+      3. Marker comments — lines starting with NOTE:/TODO:/HACK:/… attach to the
+         file node as a tech-debt / rationale map (also caught in-body).
+
+    Target node ids are resolved by LINE rather than re-derived, so this stays
+    correct regardless of the id scheme _extract_generic uses: it maps each
+    code node's declaration line to its id and looks up the documented line.
+    """
+    try:
+        import tree_sitter_cpp as tscpp
+        from tree_sitter import Language, Parser
+        language = Language(tscpp.language())
+        parser = Parser(language)
+        source = _strip_ue_macros(path.read_bytes())
+        tree = parser.parse(source)
+        root = tree.root_node
+    except Exception:
+        return
+
+    stem = _file_stem(path)
+    str_path = str(path)
+    nodes = result["nodes"]
+    edges = result["edges"]
+    seen_ids = {n["id"] for n in nodes}
+    file_nid = _make_id(str(path))
+
+    # Map declaration line -> node id for code nodes from THIS file. Exclude the
+    # file node (always L1) so a top-of-file license/copyright header isn't
+    # mistaken for file-level rationale; the file node only collects markers.
+    line_to_nid: dict[int, str] = {}
+    for n in nodes:
+        if n.get("source_file") != str_path or n["id"] == file_nid:
+            continue
+        loc = n.get("source_location") or ""
+        if loc.startswith("L") and loc[1:].isdigit():
+            line_to_nid.setdefault(int(loc[1:]), n["id"])
+
+    seen_rationale: set[int] = set()
+
+    def _add_rationale(text: str, line: int, parent_nid: str) -> None:
+        label = text[:80].strip()
+        if len(label) < _CPP_COMMENT_MIN_LEN:
+            return
+        rid = _make_id(stem, "rationale", str(line))
+        if line not in seen_rationale:
+            seen_rationale.add(line)
+            if rid not in seen_ids:
+                seen_ids.add(rid)
+                nodes.append({
+                    "id": rid,
+                    "label": label,
+                    "file_type": "rationale",
+                    "source_file": str_path,
+                    "source_location": f"L{line}",
+                })
+        edges.append({
+            "source": rid,
+            "target": parent_nid,
+            "relation": "rationale_for",
+            "confidence": "EXTRACTED",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+            "weight": 1.0,
+        })
+
+    # Collect every comment node (1-based line span + raw text).
+    comments: list[tuple[int, int, str]] = []
+
+    def collect(n) -> None:
+        if n.type == "comment":
+            comments.append((n.start_point[0] + 1, n.end_point[0] + 1,
+                             _read_text(n, source)))
+        for c in n.children:
+            collect(c)
+
+    collect(root)
+    comments.sort()
+
+    # Line text of the (macro-blanked) source, for blank-line skipping below.
+    src_lines = source.decode("utf-8", errors="replace").splitlines()
+
+    # Merge directly-adjacent line comments into one block.
+    blocks: list[list] = []  # [start_line, end_line, [cleaned_text, ...]]
+    for c_start, c_end, ctext in comments:
+        cleaned = _strip_cpp_comment(ctext)
+        if not cleaned:
+            continue
+        if blocks and c_start == blocks[-1][1] + 1:
+            blocks[-1][1] = c_end
+            blocks[-1][2].append(cleaned)
+        else:
+            blocks.append([c_start, c_end, [cleaned]])
+
+    for b_start, b_end, texts in blocks:
+        joined = " ".join(texts).strip()
+        if len(joined) < _CPP_COMMENT_MIN_LEN:
+            continue
+        # Trailing inline: a single comment on the same line as a code node.
+        if b_start == b_end and b_start in line_to_nid:
+            _add_rationale(joined, b_start, line_to_nid[b_start])
+            continue
+        # Leading: the comment documents the NEXT meaningful line. Skip blank
+        # lines — UE macros (UFUNCTION/UPROPERTY/GENERATED_BODY) were blanked to
+        # spaces upstream, so they skip naturally — then attach iff that first
+        # non-blank line is a tracked declaration. If it's something else
+        # (#include, #pragma, an access specifier), don't attach: this keeps a
+        # file-top license/copyright header from latching onto the class below.
+        for probe in range(b_end + 1, min(b_end + 26, len(src_lines) + 1)):
+            if not src_lines[probe - 1].strip():
+                continue
+            if probe in line_to_nid:
+                _add_rationale(joined, b_start, line_to_nid[probe])
+            break
+
+    # Marker comments anywhere (incl. inside bodies) → file-level debt map.
+    source_text = source.decode("utf-8", errors="replace")
+    for lineno, line_text in enumerate(source_text.splitlines(), start=1):
+        stripped = line_text.strip()
+        if any(stripped.startswith(p) for p in _CPP_RATIONALE_PREFIXES):
+            cleaned = _strip_cpp_comment(stripped)
+            if len(cleaned) >= _CPP_COMMENT_MIN_LEN:
+                _add_rationale(cleaned, lineno, file_nid)
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def extract_python(path: Path) -> dict:
@@ -3998,13 +4269,20 @@ def extract_groovy(path: Path) -> dict:
 
 
 def extract_c(path: Path) -> dict:
-    """Extract functions and includes from a .c/.h file."""
-    return _extract_generic(path, _C_CONFIG)
+    """Extract functions and includes from a .c file (+ doc-comment rationale)."""
+    result = _extract_generic(path, _C_CONFIG)
+    if "error" not in result:
+        _extract_cpp_rationale(path, result)
+    return result
 
 
 def extract_cpp(path: Path) -> dict:
-    """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file."""
-    return _extract_generic(path, _CPP_CONFIG)
+    """Extract functions, classes, enums, and includes from a .cpp/.cc/.cxx/.hpp/.h
+    file (+ doc-comment rationale)."""
+    result = _extract_generic(path, _CPP_CONFIG)
+    if "error" not in result:
+        _extract_cpp_rationale(path, result)
+    return result
 
 
 def extract_ruby(path: Path) -> dict:
@@ -10040,7 +10318,10 @@ _DISPATCH: dict[str, Any] = {
     ".groovy": extract_groovy,
     ".gradle": extract_groovy,
     ".c": extract_c,
-    ".h": extract_c,
+    ".h": extract_cpp,  # UE/C++-dominant: parse headers with the C++ grammar so
+                        # classes/structs/enums and their declarations (where UE
+                        # doc-comments live) become nodes. tree-sitter-cpp is a
+                        # superset of C, so plain-C headers still parse.
     ".cpp": extract_cpp,
     ".cc": extract_cpp,
     ".cxx": extract_cpp,
