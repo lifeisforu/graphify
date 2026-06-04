@@ -357,11 +357,31 @@ def test_cpp_member_variable_leading_and_trailing_comment(tmp_path):
     assert any("hit points" in t for t in _labels_for(result, "Health"))
 
 
-def test_cpp_marker_comment_goes_to_file_node(tmp_path):
+def test_cpp_in_body_marker_comment_goes_to_enclosing_function(tmp_path):
     path = _write_cpp(tmp_path, '''
         void Build()
         {
             // TODO: must run before linking or the build will fail outright
+            return;
+        }
+    ''')
+    result = extract_cpp(path)
+    func_labels = [n["label"] for n in result["nodes"]
+                   if "Build" in n.get("label", "")
+                   and n.get("file_type") != "rationale"
+                   and not n.get("label", "").endswith(".h")]
+    assert func_labels, result["nodes"]
+    attached = _labels_for(result, func_labels[0])
+    assert any("TODO" in t for t in attached), attached
+
+
+def test_cpp_file_scope_marker_comment_goes_to_file_node(tmp_path):
+    path = _write_cpp(tmp_path, '''
+        // TODO: split this header into per-subsystem includes eventually
+        #pragma once
+
+        void Build()
+        {
             return;
         }
     ''')
@@ -371,6 +391,50 @@ def test_cpp_marker_comment_goes_to_file_node(tmp_path):
     assert file_nodes
     attached = _labels_for(result, file_nodes[0]["label"])
     assert any("TODO" in t for t in attached), attached
+
+
+def test_cpp_in_body_marker_in_method_prefers_method_over_class(tmp_path):
+    path = _write_cpp(tmp_path, '''
+        class UMover
+        {
+            void Step()
+            {
+                // HACK: clamp twice because the physics solver overshoots once
+                return;
+            }
+        };
+    ''')
+    result = extract_cpp(path)
+    method_labels = [n["label"] for n in result["nodes"]
+                     if "Step" in n.get("label", "")
+                     and n.get("file_type") != "rationale"]
+    assert method_labels, result["nodes"]
+    attached = _labels_for(result, method_labels[0])
+    assert any("clamp twice" in t for t in attached), attached
+    # The class node must NOT also receive it — innermost wins.
+    assert not any("clamp twice" in t for t in _labels_for(result, "UMover"))
+
+
+def test_cpp_marker_comment_flexible_case_and_whitespace(tmp_path):
+    path = _write_cpp(tmp_path, '''
+        void Build()
+        {
+            // note : lowercase marker with space before the colon still counts
+            //TODO: no space after the slashes also counts
+            /// FIXME : doxygen triple-slash marker variant counts too
+            return;
+        }
+    ''')
+    result = extract_cpp(path)
+    func_labels = [n["label"] for n in result["nodes"]
+                   if "Build" in n.get("label", "")
+                   and n.get("file_type") != "rationale"
+                   and not n.get("label", "").endswith(".h")]
+    assert func_labels, result["nodes"]
+    attached = _labels_for(result, func_labels[0])
+    assert any("lowercase marker" in t for t in attached), attached
+    assert any("no space after" in t for t in attached), attached
+    assert any("doxygen triple-slash" in t for t in attached), attached
 
 
 def test_cpp_short_comment_ignored(tmp_path):

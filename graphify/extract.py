@@ -3689,8 +3689,14 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
 
 # ── C/C++ rationale extraction ────────────────────────────────────────────────
 
-_CPP_RATIONALE_PREFIXES = ("// NOTE:", "// IMPORTANT:", "// HACK:", "// WHY:",
-                           "// RATIONALE:", "// TODO:", "// FIXME:", "//!")
+# Marker comment lines (NOTE:/TODO:/HACK:/...) attach to the file node as a
+# tech-debt map. Case-insensitive with flexible whitespace, so `// note :`,
+# `//TODO:`, and `/// FIXME:` all count. `//!` (Doxygen) matches with or
+# without a keyword marker.
+_CPP_RATIONALE_MARKER_RE = re.compile(
+    r"//[/!<]*\s*(?:NOTE|IMPORTANT|HACK|WHY|RATIONALE|TODO|FIXME)\s*:",
+    re.IGNORECASE,
+)
 
 # Comments shorter than this (after stripping markers) are dropped as noise
 # (e.g. "// ok", "// loop").
@@ -3732,8 +3738,10 @@ def _extract_cpp_rationale(path: Path, result: dict) -> None:
          above a declaration attaches to that declaration's node.
       2. Trailing comments — a comment sharing its line with a member/enumerator
          attaches to that node (e.g. `float Health; // 체력`).
-      3. Marker comments — lines starting with NOTE:/TODO:/HACK:/… attach to the
-         file node as a tech-debt / rationale map (also caught in-body).
+      3. Marker comments — lines starting with NOTE:/TODO:/HACK:/… (also caught
+         in-body). Attached to the innermost enclosing tracked declaration
+         (function/class/struct/enum) when inside one, else to the file node,
+         so the file node only aggregates file-scope tech-debt markers.
 
     Target node ids are resolved by LINE rather than re-derived, so this stays
     correct regardless of the id scheme _extract_generic uses: it maps each
@@ -3796,18 +3804,36 @@ def _extract_cpp_rationale(path: Path, result: dict) -> None:
             "weight": 1.0,
         })
 
-    # Collect every comment node (1-based line span + raw text).
+    # Collect every comment node (1-based line span + raw text), plus the line
+    # span of each tracked declaration so in-body marker comments can resolve
+    # to their innermost enclosing function/class instead of the file node.
     comments: list[tuple[int, int, str]] = []
+    decl_spans: list[tuple[int, int, str]] = []  # (start_line, end_line, nid)
+    span_types = ("function_definition", "class_specifier",
+                  "struct_specifier", "enum_specifier")
 
     def collect(n) -> None:
         if n.type == "comment":
             comments.append((n.start_point[0] + 1, n.end_point[0] + 1,
                              _read_text(n, source)))
+        elif n.type in span_types:
+            s, e = n.start_point[0] + 1, n.end_point[0] + 1
+            nid = line_to_nid.get(s)
+            if nid and e > s:
+                decl_spans.append((s, e, nid))
         for c in n.children:
             collect(c)
 
     collect(root)
     comments.sort()
+
+    def _enclosing_nid(line: int) -> str:
+        """Innermost tracked declaration containing `line`, else the file node."""
+        best: tuple[int, str] | None = None
+        for s, e, nid in decl_spans:
+            if s <= line <= e and (best is None or e - s < best[0]):
+                best = (e - s, nid)
+        return best[1] if best else file_nid
 
     # Line text of the (macro-blanked) source, for blank-line skipping below.
     src_lines = source.decode("utf-8", errors="replace").splitlines()
@@ -3845,14 +3871,15 @@ def _extract_cpp_rationale(path: Path, result: dict) -> None:
                 _add_rationale(joined, b_start, line_to_nid[probe])
             break
 
-    # Marker comments anywhere (incl. inside bodies) → file-level debt map.
+    # Marker comments anywhere (incl. inside bodies) → innermost enclosing
+    # declaration when there is one, else the file-level debt map.
     source_text = source.decode("utf-8", errors="replace")
     for lineno, line_text in enumerate(source_text.splitlines(), start=1):
         stripped = line_text.strip()
-        if any(stripped.startswith(p) for p in _CPP_RATIONALE_PREFIXES):
+        if _CPP_RATIONALE_MARKER_RE.match(stripped) or stripped.startswith("//!"):
             cleaned = _strip_cpp_comment(stripped)
             if len(cleaned) >= _CPP_COMMENT_MIN_LEN:
-                _add_rationale(cleaned, lineno, file_nid)
+                _add_rationale(cleaned, lineno, _enclosing_nid(lineno))
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

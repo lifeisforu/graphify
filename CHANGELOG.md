@@ -2,6 +2,11 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.8.37 (2026-06-05)
+
+- Feat: C/C++ rationale marker comments (`NOTE:`/`TODO:`/`HACK:`/`WHY:`/`RATIONALE:`/`FIXME:`/`IMPORTANT:`) now match case-insensitively with flexible whitespace — `// note :`, `//TODO:`, and `/// FIXME :` all count (was exact-prefix only).
+- Feat: in-body marker comments now attach to the innermost enclosing tracked declaration (function/method/class/struct/enum) instead of the file node; file-scope markers still go to the file node as the tech-debt map.
+
 ## 0.8.36 (2026-06-02)
 
 - Feat: C/C++ doc-comment (rationale) extraction, UE-aware. Doxygen `///` / `//!` / `/** */` / `/*! */`, contiguous `//` runs, and trailing inline comments are pulled in as `rationale` nodes linked to the documented code node via `rationale_for` edges; `// NOTE:`/`TODO:`/`HACK:`/`FIXME:`/… markers attach to the file node as a debt map. Leading comments attach to the next real declaration (blank lines and reflection macros are skipped), so file-top license headers don't latch onto the first class. Mirrors the existing Python rationale pass for `extract_c`/`extract_cpp`.
